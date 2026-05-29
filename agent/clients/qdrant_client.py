@@ -149,7 +149,7 @@ class QdrantDiagnostic:
                 query=[embedding],
                 limit=limit,
                 with_payload=True,
-                filter=search_filter
+                query_filter=search_filter
             )
             
             matches = []
