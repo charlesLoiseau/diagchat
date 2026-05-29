@@ -72,6 +72,12 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+**Main dependencies:**
+- `openai>=1.3.0` - For LLM and Embedding API clients (OpenAI-compatible)
+- `qdrant-client>=1.7.0` - For vector database access
+- `fastapi>=0.109.0` - For API server
+- `python-dotenv>=1.0.0` - For environment variable management
+
 ### Required Services
 
 The diagnostic agent requires the following services to be running:
@@ -83,7 +89,8 @@ The diagnostic agent requires the following services to be running:
 | Redis MCP Server | Redis cluster access | http://localhost:8092 |
 | Kafka MCP Server | Kafka cluster access | http://localhost:8093 |
 | Qdrant | Vector database for documentation | http://localhost:8000 |
-| LLM API (Gemma4) | Language model for analysis | http://localhost:8080/v1/chat/completions |
+| LLM API (OpenAI-compatible) | Language model for analysis | http://localhost:8080/v1 |
+| Embedding API (BGE-M3) | Embedding model for vector search | http://localhost:1234/v1 |
 
 ---
 
@@ -100,12 +107,20 @@ cp .env.example .env
 Edit `.env` with your configuration:
 
 ```env
-# LLM Configuration
-LLM_URL=http://localhost:8080/v1/chat/completions
+# LLM Configuration (OpenAI-compatible API)
+LLM_URL=http://localhost:8080/v1
 LLM_API_KEY=your_bearer_token_here
+LLM_MODEL=diagnostic-agent
 LLM_TIMEOUT=120.0
 
+# Embedding Model Configuration (OpenAI-compatible API for BGE-M3)
+EMBEDDING_URL=http://localhost:1234/v1
+EMBEDDING_API_KEY=your_bearer_token_here
+EMBEDDING_MODEL=bge-m3
+EMBEDDING_TIMEOUT=120.0
+
 # MCP Servers Configuration
+# Only servers with configured URLs will be loaded
 MCP_KUBERNETES_URL=http://localhost:8090
 MCP_OPENSEARCH_URL=http://localhost:8091
 MCP_REDIS_URL=http://localhost:8092
@@ -125,6 +140,8 @@ API_PORT=8001
 # Security (optional)
 API_AUTH_TOKEN=your_secure_token_here
 ```
+
+> **Note:** If LLM and Embedding services share the same API key, you can omit `EMBEDDING_API_KEY` and the system will use `LLM_API_KEY`.
 
 > **Security Note:** The `.env` file is in `.gitignore` and will not be committed to version control. Never commit sensitive tokens to your repository.
 
