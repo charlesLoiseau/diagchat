@@ -196,40 +196,19 @@ class QdrantDiagnostic:
             print(f"[Qdrant Search] Error: {e}")
             return []
     
-    def _get_vector_dimension(self) -> int:
-        """
-        Gets the vector dimension from the Qdrant collection.
-        
-        @return: The dimension size of vectors in the collection
-        """
-        try:
-            collection_info = self.client.get_collection(self.collection)
-            return collection_info.vectors_size or 384
-        except:
-            return 384
-    
     def _get_embedding(self, text: str) -> List[float]:
         """
         Gets the embedding vector for a text using the BGE-M3 model via OpenAI-compatible API.
-        Falls back to mock embedding if the embedding client is not available.
         
         @param text: Input text to embed
         @return: Vector of floats representing the embedding
+        @throws Exception: If embedding service is not available
         """
         if not self.embedding_client:
-            # Fallback: generate mock embedding with correct dimension
-            dimension = self._get_vector_dimension()
-            print(f"[Embedding] Warning: Using mock embedding (dimension: {dimension})")
-            return [0.1] * dimension
+            raise Exception("Embedding client not initialized")
         
-        try:
-            response = self.embedding_client.embeddings.create(
-                model=self.embedding_model,
-                input=text
-            )
-            return response.data[0].embedding
-        except Exception as e:
-            print(f"[Embedding] Error: {e}")
-            # Fallback to mock
-            dimension = self._get_vector_dimension()
-            return [0.1] * dimension
+        response = self.embedding_client.embeddings.create(
+            model=self.embedding_model,
+            input=text
+        )
+        return response.data[0].embedding
