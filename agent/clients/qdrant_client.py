@@ -10,6 +10,7 @@ semantic search on documentation collection.
 """
 
 from typing import Optional, List, Set
+import openai
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from agent.config import Config
@@ -31,9 +32,11 @@ class QdrantDiagnostic:
         """
         Initializes the Qdrant client and detects the collection.
         Loads the list of available products from the collection payloads.
+        Initializes the embedding client for BGE-M3 or similar models.
         
-        @throws Exception: If connection to Qdrant fails
+        @throws Exception: If connection to Qdrant or embedding service fails
         """
+        # Initialize Qdrant client
         try:
             self.client = QdrantClient(
                 host=Config.QDRANT_HOST,
@@ -49,6 +52,22 @@ class QdrantDiagnostic:
             self.client = None
             self.collection = Config.QDRANT_COLLECTION
             self.products = []
+        
+        # Initialize Embedding client (OpenAI-compatible API for BGE-M3)
+        # Uses EMBEDDING_API_KEY if set, otherwise falls back to LLM_API_KEY
+        embedding_api_key = Config.EMBEDDING_API_KEY or Config.LLM_API_KEY
+        try:
+            self.embedding_client = openai.OpenAI(
+                api_key=embedding_api_key,
+                base_url=Config.EMBEDDING_URL,
+                timeout=Config.EMBEDDING_TIMEOUT
+            )
+            self.embedding_model = Config.EMBEDDING_MODEL
+            print(f"[Embedding] Model: {self.embedding_model}")
+        except Exception as e:
+            print(f"[Embedding] Error: {e}")
+            self.embedding_client = None
+            self.embedding_model = "bge-m3"
     
     def _detect_collection(self) -> str:
         """
@@ -129,8 +148,7 @@ class QdrantDiagnostic:
             return []
         
         try:
-            # TODO: Replace _mock_embedding with your actual embedder
-            embedding = self._mock_embedding(query)
+            embedding = self._get_embedding(query)
             
             # Build filter for products if specified
             search_filter = None
@@ -178,13 +196,40 @@ class QdrantDiagnostic:
             print(f"[Qdrant Search] Error: {e}")
             return []
     
-    def _mock_embedding(self, text: str) -> List[float]:
+    def _get_vector_dimension(self) -> int:
         """
-        Generates a mock embedding vector.
+        Gets the vector dimension from the Qdrant collection.
         
-        TODO: Replace this with your actual embedding function.
+        @return: The dimension size of vectors in the collection
+        """
+        try:
+            collection_info = self.client.get_collection(self.collection)
+            return collection_info.vectors_size or 384
+        except:
+            return 384
+    
+    def _get_embedding(self, text: str) -> List[float]:
+        """
+        Gets the embedding vector for a text using the BGE-M3 model via OpenAI-compatible API.
+        Falls back to mock embedding if the embedding client is not available.
         
         @param text: Input text to embed
         @return: Vector of floats representing the embedding
         """
-        return [0.1] * 768  # Standard embedding dimension
+        if not self.embedding_client:
+            # Fallback: generate mock embedding with correct dimension
+            dimension = self._get_vector_dimension()
+            print(f"[Embedding] Warning: Using mock embedding (dimension: {dimension})")
+            return [0.1] * dimension
+        
+        try:
+            response = self.embedding_client.embeddings.create(
+                model=self.embedding_model,
+                input=text
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            print(f"[Embedding] Error: {e}")
+            # Fallback to mock
+            dimension = self._get_vector_dimension()
+            return [0.1] * dimension
