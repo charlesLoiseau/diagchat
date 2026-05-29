@@ -55,12 +55,16 @@ class Config:
     LLM_TIMEOUT: float = float(os.getenv("LLM_TIMEOUT", "120.0"))
     
     # MCP Servers Configuration
-    MCP_SERVERS: Dict[str, str] = {
-        "kubernetes": os.getenv("MCP_KUBERNETES_URL", "http://localhost:8090"),
-        "opensearch": os.getenv("MCP_OPENSEARCH_URL", "http://localhost:8091"),
-        "redis": os.getenv("MCP_REDIS_URL", "http://localhost:8092"),
-        "kafka": os.getenv("MCP_KAFKA_URL", "http://localhost:8093")
-    }
+    # Only includes servers that are explicitly configured in environment variables
+    MCP_SERVERS: Dict[str, str] = {}
+    if os.getenv("MCP_KUBERNETES_URL"):
+        MCP_SERVERS["kubernetes"] = os.getenv("MCP_KUBERNETES_URL")
+    if os.getenv("MCP_OPENSEARCH_URL"):
+        MCP_SERVERS["opensearch"] = os.getenv("MCP_OPENSEARCH_URL")
+    if os.getenv("MCP_REDIS_URL"):
+        MCP_SERVERS["redis"] = os.getenv("MCP_REDIS_URL")
+    if os.getenv("MCP_KAFKA_URL"):
+        MCP_SERVERS["kafka"] = os.getenv("MCP_KAFKA_URL")
     MCP_TIMEOUT: float = float(os.getenv("MCP_TIMEOUT", "10.0"))
     
     # Qdrant Configuration
