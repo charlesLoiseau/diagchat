@@ -20,7 +20,6 @@ import json
 import re
 from typing import Optional, List, Dict, Any, Tuple
 
-# Fix Windows encoding
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 from agent.config import Config
@@ -57,12 +56,10 @@ class DiagnosticAgent:
         print("  MULTI-STEP DIAGNOSTIC AGENT")
         print("=" * 80)
         
-        # Initialize clients
         self.mcp = MCPRegistry()
         self.qdrant = QdrantDiagnostic()
         self.llm = LLMAPI()
         
-        # History tracking
         self.history: List[Dict[str, str]] = []
         
         print("\n" + "=" * 80)
@@ -77,24 +74,18 @@ class DiagnosticAgent:
         """
         start_total = time.time()
         
-        # Step 1: Identify category
         category = self._identify_category(user_query)
         
-        # Step 2: Quick initial diagnosis
         initial_diagnosis = self._quick_diagnose(user_query, category)
         
-        # Step 3: Execute relevant tools
         tools_results = self._execute_relevant_tools(user_query, category, initial_diagnosis)
         
-        # Step 4: Search documentation
         docs = self._search_documentation(user_query, initial_diagnosis, tools_results)
         
-        # Step 5: Generate final report
         report = self._generate_final_report(
             user_query, category, initial_diagnosis, tools_results, docs
         )
         
-        # Add to history
         self.history.append({
             "query": user_query,
             "response": report,
@@ -213,18 +204,14 @@ Respond in strict JSON:
                         "reason": f"Relevant for {category}"
                     })
         
-        # Limit to max 3 tools
         tools_to_call = tools_to_call[:3]
         
-        # Execute tools
         results = []
         for tool_info in tools_to_call:
             try:
-                # Prepare arguments
                 arguments = {}
                 for param, schema in tool_info.get("parameters", {}).items():
                     if schema.get("required"):
-                        # Try to infer value from query
                         arguments[param] = self._extract_param_from_query(query, param)
                     elif "default" in schema:
                         arguments[param] = schema["default"]
@@ -267,7 +254,6 @@ Respond in strict JSON:
         query_lower = query.lower()
         param_lower = param.lower()
         
-        # Common patterns for different parameter types
         patterns = {
             "pod": [r'pod[/:]?\s*(\S+)', r'pod\s+(\S+)'],
             "namespace": [r'namespace[/:]?\s*(\S+)', r'-n\s+(\S+)'],
@@ -283,9 +269,7 @@ Respond in strict JSON:
             if match:
                 return match.group(1)
         
-        # If param appears in query
         if param_lower in query_lower:
-            # Extract what follows
             match = re.search(rf'{param_lower}[:\s]+([^\s,;]+)', query, re.IGNORECASE)
             if match:
                 return match.group(1)
@@ -304,10 +288,8 @@ Respond in strict JSON:
         @param tools_results: List of tool execution results
         @return: List of DocumentationMatch objects
         """
-        # Identify products from query
         matched_products = self.qdrant.match_products(query)
         
-        # Enrich query with diagnostic terms
         enriched_query = query
         
         if isinstance(diagnosis, dict):
@@ -339,15 +321,12 @@ Respond in strict JSON:
         @param docs: List of DocumentationMatch objects
         @return: Formatted diagnostic report string
         """
-        # Build prompt for LLM
         prompt_parts = []
         
-        # Query context
         prompt_parts.append("QUERY CONTEXT:")
         prompt_parts.append(f"User query: {query}")
         prompt_parts.append(f"Category: {category}")
         
-        # Initial diagnosis
         if isinstance(diagnosis, dict):
             prompt_parts.append("")
             prompt_parts.append("INITIAL DIAGNOSIS:")
@@ -356,7 +335,6 @@ Respond in strict JSON:
             if diagnosis.get("key_elements"):
                 prompt_parts.append(f"- Key elements: {', '.join(diagnosis['key_elements'])}")
         
-        # Tool results
         if tools_results:
             prompt_parts.append("")
             prompt_parts.append("TOOL RESULTS:")
@@ -368,7 +346,6 @@ Respond in strict JSON:
                         if k != "_error" and isinstance(v, str) and len(v) < 200:
                             prompt_parts.append(f"    {k}: {v}")
         
-        # Found documentation
         if docs:
             prompt_parts.append("")
             prompt_parts.append("FOUND DOCUMENTATION:")
@@ -377,7 +354,6 @@ Respond in strict JSON:
                 prompt_parts.append(f"- {doc.title} (score: {doc.score:.2f}){url_info}")
                 prompt_parts.append(f"    > {doc.content[:200]}...")
         
-        # Instructions for LLM
         prompt_parts.append("")
         prompt_parts.append("INSTRUCTIONS:")
         prompt_parts.append("1. Analyze all elements above")
@@ -399,13 +375,11 @@ Respond in strict JSON:
         prompt_parts.append("## RESOLUTION STEPS")
         prompt_parts.append("[1. First step...]")
         
-        # Call LLM
         response = self.llm.generate([
             {"role": "system", "content": self._get_system_prompt()},
             {"role": "user", "content": "\n".join(prompt_parts)}
         ])
         
-        # Format final response
         return self._format_response(response, query, category, docs, tools_results)
     
     def _get_system_prompt(self) -> str:
@@ -428,7 +402,7 @@ STRICT RULES:
 2. ALWAYS cite sources (documentation, tools used)
 3. Propose exact commands to execute
 4. NUMBER ALL resolution steps
-5. Use Markdown format with emojis as in the example
+5. Use Markdown format as in the example
 
 EXAMPLE FORMAT:
 ## IDENTIFIED PROBLEM
@@ -460,13 +434,11 @@ high
         """
         lines = []
         
-        # Header
         lines.append("=" * 80)
         lines.append("  DIAGNOSTIC REPORT")
         lines.append("=" * 80)
         lines.append("")
         
-        # Extract problem
         problem = self._extract_section(llm_response, "IDENTIFIED PROBLEM")
         if problem:
             lines.append("## IDENTIFIED PROBLEM")

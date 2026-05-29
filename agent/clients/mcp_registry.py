@@ -5,7 +5,7 @@ MCP REGISTRY MODULE
 ===================
 
 Manages multiple MCP servers (Kubernetes, OpenSearch, Redis, Kafka).
-Uses the official MCP Python client for proper session management.
+Uses the official MCP Python client (ClientSession) for proper session management.
 Provides centralized access to all MCP tools across different servers,
 with automatic discovery and categorization.
 """
@@ -14,18 +14,19 @@ import asyncio
 import threading
 import time
 from typing import Optional, List, Dict, Any, Tuple
-from mcp import Client
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
 from agent.config import Config
 
 
 class MCPRegistry:
     """
-    Manages multiple MCP servers using the official MCP Python client.
+    Manages multiple MCP servers using the official MCP ClientSession.
     
     Handles session initialization, tool discovery, and tool execution
     using the Model Context Protocol (MCP) official SDK.
     
-    @attribute clients: Dictionary of MCP Client instances for each category
+    @attribute sessions: Dictionary of MCP ClientSession instances for each category
     @attribute tools: Dictionary mapping category to list of available tools
     @attribute loop: Asyncio event loop for managing async operations
     """
@@ -38,18 +39,15 @@ class MCPRegistry:
         
         @throws Exception: If connection to MCP servers fails
         """
-        self.clients: Dict[str, Client] = {}
+        self.sessions: Dict[str, ClientSession] = {}
         self.tools: Dict[str, List[Dict[str, Any]]] = {}
         
-        # Create dedicated event loop for MCP async operations
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self._run_event_loop, daemon=True)
         self.thread.start()
         
-        # Give the event loop a moment to start
         time.sleep(0.1)
         
-        # Initialize all configured MCP servers
         self._initialize_sync()
     
     def _run_event_loop(self):
@@ -67,13 +65,12 @@ class MCPRegistry:
         
         for category, url in Config.MCP_SERVERS.items():
             try:
-                # Create a coroutine for initialization
                 coro = self._initialize_server(category, url)
                 future = asyncio.run_coroutine_threadsafe(coro, self.loop)
-                future.result()  # Block until complete
+                future.result()
             except Exception as e:
                 print(f"[MCP/{category}] Error: {e}")
-                self.clients[category] = None
+                self.sessions[category] = None
                 self.tools[category] = []
     
     async def _initialize_server(self, category: str, url: str):
@@ -84,27 +81,28 @@ class MCPRegistry:
         @param url: The URL of the MCP server
         """
         try:
-            # Create client and initialize session
-            client = Client(url=url)
-            await client.initialize()
+            mcp_url = f"{url}/mcp" if not url.endswith("/mcp") else url
             
-            # List available tools
-            tools = await client.list_tools()
-            
-            self.clients[category] = client
-            self.tools[category] = [
-                {
-                    "name": tool.name,
-                    "description": tool.description or "",
-                    "inputSchema": tool.inputSchema or {}
-                }
-                for tool in tools
-            ]
-            print(f"[MCP/{category}] Successfully loaded {len(self.tools[category])} tools")
-            
+            async with streamablehttp_client(mcp_url) as (read, write, _):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    
+                    tools_result = await session.list_tools()
+                    
+                    self.sessions[category] = session
+                    self.tools[category] = [
+                        {
+                            "name": tool.name,
+                            "description": tool.description or "",
+                            "inputSchema": dict(tool.inputSchema) if tool.inputSchema else {}
+                        }
+                        for tool in tools_result.tools
+                    ]
+                    print(f"[MCP/{category}] Successfully loaded {len(self.tools[category])} tools")
+                    
         except Exception as e:
             print(f"[MCP/{category}] Error: {e}")
-            self.clients[category] = None
+            self.sessions[category] = None
             self.tools[category] = []
     
     def get_tool(self, tool_name: str) -> Optional[Tuple[str, Dict]]:
@@ -129,23 +127,29 @@ class MCPRegistry:
         @param arguments: Dictionary of arguments for the tool
         @return: Dictionary containing the tool response or error
         """
-        if category not in self.clients or not self.clients[category]:
+        if category not in self.sessions or not self.sessions[category]:
             return {"error": f"MCP server {category} not available"}
         
         try:
-            client = self.clients[category]
-            coro = client.call_tool(tool_name, arguments)
-            future = asyncio.run_coroutine_threadsafe(coro, self.loop)
-            result = future.result(timeout=Config.MCP_TIMEOUT)
+            session = self.sessions[category]
             
-            # Convert MCP ToolResult to dict
-            return {
-                "content": [
-                    {"type": "text", "text": str(content)}
-                    if hasattr(content, 'text') else content
-                    for content in result.content
-                ] if hasattr(result, 'content') else {}
-            }
+            async def _call_tool():
+                result = await session.call_tool(tool_name, arguments)
+                content_list = []
+                if hasattr(result, 'content'):
+                    for item in result.content:
+                        if hasattr(item, 'text'):
+                            content_list.append({"type": "text", "text": item.text})
+                        elif isinstance(item, dict):
+                            content_list.append(item)
+                        else:
+                            content_list.append({"type": "text", "text": str(item)})
+                return {"content": content_list} if content_list else {}
+            
+            coro = _call_tool()
+            future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+            return future.result(timeout=Config.MCP_TIMEOUT)
+            
         except Exception as e:
             return {"error": str(e)}
     
@@ -153,15 +157,16 @@ class MCPRegistry:
         """
         Closes all MCP client connections.
         """
-        for category, client in self.clients.items():
-            if client:
+        for category, session in self.sessions.items():
+            if session:
                 try:
-                    # Close client asynchronously
-                    coro = client.close()
+                    async def _close():
+                        await session.aclose()
+                    
+                    coro = _close()
                     future = asyncio.run_coroutine_threadsafe(coro, self.loop)
                     future.result(timeout=5)
                 except:
                     pass
         
-        # Stop the event loop thread
         self.loop.call_soon_threadsafe(self.loop.stop)

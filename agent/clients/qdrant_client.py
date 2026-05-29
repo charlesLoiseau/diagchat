@@ -36,7 +36,6 @@ class QdrantDiagnostic:
         
         @throws Exception: If connection to Qdrant or embedding service fails
         """
-        # Initialize Qdrant client
         try:
             self.client = QdrantClient(
                 host=Config.QDRANT_HOST,
@@ -53,8 +52,6 @@ class QdrantDiagnostic:
             self.collection = Config.QDRANT_COLLECTION
             self.products = []
         
-        # Initialize Embedding client (OpenAI-compatible API for BGE-M3)
-        # Uses EMBEDDING_API_KEY if set, otherwise falls back to LLM_API_KEY
         embedding_api_key = Config.EMBEDDING_API_KEY or Config.LLM_API_KEY
         try:
             self.embedding_client = openai.OpenAI(
@@ -95,7 +92,6 @@ class QdrantDiagnostic:
         
         try:
             products: Set[str] = set()
-            # Scroll through all points to collect products
             points, _ = self.client.scroll(
                 collection_name=self.collection,
                 limit=10000,
@@ -150,7 +146,6 @@ class QdrantDiagnostic:
         try:
             embedding = self._get_embedding(query)
             
-            # Build filter for products if specified
             search_filter = None
             if products:
                 search_filter = models.Filter(
@@ -188,7 +183,6 @@ class QdrantDiagnostic:
                     score=r.score
                 ))
             
-            # Sort by score descending
             matches.sort(key=lambda x: x.score, reverse=True)
             return matches
             
