@@ -53,7 +53,8 @@ class DiagnosticAgent:
         @throws Exception: If initialization of any component fails
         """
         print("=" * 80)
-        print("  MULTI-STEP DIAGNOSTIC AGENT")
+        print("  INFRASTRUCTURE ASSISTANT")
+        print("  (Kubernetes, OpenSearch, Redis, Kafka)")
         print("=" * 80)
         
         self.mcp = MCPRegistry()
@@ -157,53 +158,121 @@ Respond in strict JSON:
             print(f"[Quick Diagnose] Error: {e}")
             return {"problem": query, "key_elements": [], "urgency": "medium"}
     
+    def _select_tools_with_llm(self, query: str, category: str, diagnosis: Dict,
+                               all_tools: List[Dict]) -> List[Dict]:
+        """
+        Uses LLM to intelligently select which MCP tools to execute.
+
+        @param query: The user query string
+        @param category: The problem category
+        @param diagnosis: Initial diagnosis dictionary
+        @param all_tools: List of all available MCP tools
+        @return: List of selected tools with metadata
+        """
+        # Build tool list for LLM
+        tools_text = []
+        for i, tool in enumerate(all_tools):
+            tools_text.append(f"{i+1}. [{tool['category']}] {tool['name']}: {tool['description']}")
+
+        prompt = f"""Given the user query and available MCP tools, select the 1-3 most relevant tools to execute.
+
+USER QUERY: {query}
+CATEGORY: {category}
+PROBLEM: {diagnosis.get('problem', 'Not specified')}
+
+AVAILABLE TOOLS:
+{chr(10).join(tools_text)}
+
+Select the most relevant tools to answer this query. Respond with ONLY the tool numbers (comma-separated).
+Examples:
+- "1,3,5"
+- "2"
+- "4,7"
+
+If no tools are needed, respond with "NONE".
+
+Your selection:"""
+
+        try:
+            response = self.llm.generate([
+                {"role": "system", "content": "You are a tool selection expert. Select only the most relevant tools."},
+                {"role": "user", "content": prompt}
+            ], temperature=0.1)
+
+            # Parse response
+            response = response.strip().upper()
+            if response == "NONE" or not response:
+                return []
+
+            # Extract tool indices
+            selected_indices = []
+            for part in response.replace(" ", "").split(","):
+                try:
+                    idx = int(part) - 1  # Convert to 0-based index
+                    if 0 <= idx < len(all_tools):
+                        selected_indices.append(idx)
+                except ValueError:
+                    continue
+
+            # Build selected tools list
+            selected_tools = []
+            for idx in selected_indices:
+                tool = all_tools[idx]
+                selected_tools.append({
+                    "category": tool["category"],
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool.get("inputSchema", {}).get("properties", {}),
+                    "reason": f"Selected by LLM for {category}"
+                })
+
+            print(f"[TOOL SELECTION] LLM selected {len(selected_tools)} tools: {[t['name'] for t in selected_tools]}")
+            return selected_tools
+
+        except Exception as e:
+            print(f"[TOOL SELECTION] LLM selection failed: {e}")
+            # Fallback: select tools from matching category
+            fallback = [t for t in all_tools if t['category'] == category][:2]
+            return [{
+                "category": t["category"],
+                "name": t["name"],
+                "description": t["description"],
+                "parameters": t.get("inputSchema", {}).get("properties", {}),
+                "reason": f"Fallback selection for {category}"
+            } for t in fallback]
+
     def _execute_relevant_tools(self, query: str, category: str, diagnosis: Dict) -> List[Dict]:
         """
-        Identifies and executes relevant MCP tools for the diagnosis.
-        
+        Identifies and executes relevant MCP tools using LLM-based selection.
+
         @param query: The user query string
         @param category: The problem category
         @param diagnosis: Initial diagnosis dictionary
         @return: List of tool execution results
         """
-        tools_to_call = []
-        key_elements = diagnosis.get("key_elements", [])
-        
-        # Select tools based on category and keywords
+        # Build a list of all available tools
+        all_tools = []
         for cat, cat_tools in self.mcp.tools.items():
             for tool in cat_tools:
-                tool_name = tool.get("name", "").lower()
-                tool_desc = tool.get("description", "").lower()
-                
-                # Check if tool is relevant
-                relevant = False
-                
-                # By category
-                if cat == category:
-                    relevant = True
-                
-                # By keywords
-                query_kw = query.lower()
-                for kw in ["status", "health", "log", "describe", "metric", "error"]:
-                    if kw in tool_name or kw in tool_desc:
-                        relevant = True
-                        break
-                
-                # By diagnosis key elements
-                for element in key_elements:
-                    if element.lower() in tool_name or element.lower() in tool_desc:
-                        relevant = True
-                        break
-                
-                if relevant:
-                    tools_to_call.append({
-                        "category": cat,
-                        "name": tool.get("name"),
-                        "description": tool.get("description"),
-                        "parameters": tool.get("parameters", {}),
-                        "reason": f"Relevant for {category}"
-                    })
-        
+                all_tools.append({
+                    "category": cat,
+                    "name": tool.get("name"),
+                    "description": tool.get("description", ""),
+                    "inputSchema": tool.get("inputSchema", {})
+                })
+
+        if not all_tools:
+            print("[TOOL SELECTION] No MCP tools available")
+            return []
+
+        # Use LLM to select relevant tools
+        tools_to_call = self._select_tools_with_llm(query, category, diagnosis, all_tools)
+
+        if not tools_to_call:
+            print("[TOOL SELECTION] No tools selected by LLM")
+            return []
+
+        # Limit to top 3 tools
         tools_to_call = tools_to_call[:3]
         
         results = []
@@ -341,10 +410,35 @@ Respond in strict JSON:
             for result in tools_results:
                 status = "SUCCESS" if result.get("status") == "success" else "FAILED"
                 prompt_parts.append(f"- [{status}] {result['tool']}")
-                if result.get("result") and isinstance(result["result"], dict):
-                    for k, v in result["result"].items():
-                        if k != "_error" and isinstance(v, str) and len(v) < 200:
-                            prompt_parts.append(f"    {k}: {v}")
+                if result.get("result"):
+                    # Meilleure extraction des résultats MCP
+                    result_data = result["result"]
+                    if isinstance(result_data, dict):
+                        # Extraire le contenu textuel des résultats MCP
+                        if "content" in result_data and isinstance(result_data["content"], list):
+                            for item in result_data["content"]:
+                                if isinstance(item, dict) and "text" in item:
+                                    # Afficher le texte complet (pas de limite de 200 caractères)
+                                    text = item["text"].strip()
+                                    if text:
+                                        prompt_parts.append(f"    {text}")
+                        else:
+                            # Fallback : afficher tous les champs non-error
+                            for k, v in result_data.items():
+                                if k != "error" and k != "_error":
+                                    # Afficher les valeurs complètes (supprimer la limite de 200)
+                                    if isinstance(v, str):
+                                        prompt_parts.append(f"    {k}: {v}")
+                                    elif isinstance(v, (list, dict)):
+                                        prompt_parts.append(f"    {k}: {str(v)[:1000]}...")  # Max 1000 chars pour structures
+                                    else:
+                                        prompt_parts.append(f"    {k}: {v}")
+                    elif isinstance(result_data, str):
+                        prompt_parts.append(f"    {result_data}")
+
+                # Afficher les erreurs explicitement
+                if result.get("error"):
+                    prompt_parts.append(f"    ERROR: {result['error']}")
         
         if docs:
             prompt_parts.append("")
@@ -356,24 +450,20 @@ Respond in strict JSON:
         
         prompt_parts.append("")
         prompt_parts.append("INSTRUCTIONS:")
-        prompt_parts.append("1. Analyze all elements above")
-        prompt_parts.append("2. Identify the main problem precisely")
-        prompt_parts.append("3. Evaluate severity (low, medium, high, critical)")
-        prompt_parts.append("4. Propose NUMBERED and ACTIONABLE resolution steps")
-        prompt_parts.append("5. Reference relevant documentation with title")
+        prompt_parts.append("1. Carefully read the TOOL RESULTS - this is real, current data from the infrastructure")
+        prompt_parts.append("2. Review the DOCUMENTATION found - this is internal team knowledge")
+        prompt_parts.append("3. Answer the user's query using this information")
+        prompt_parts.append("4. If this is a diagnostic query, provide:")
+        prompt_parts.append("   - Clear problem identification")
+        prompt_parts.append("   - Severity level (low, medium, high, critical)")
+        prompt_parts.append("   - Numbered resolution steps")
+        prompt_parts.append("   - Documentation references")
+        prompt_parts.append("5. If this is an informational query, provide:")
+        prompt_parts.append("   - Clear, helpful answer based on tool data and docs")
+        prompt_parts.append("   - Examples or commands when relevant")
+        prompt_parts.append("   - Documentation references if available")
         prompt_parts.append("")
-        prompt_parts.append("REQUIRED RESPONSE FORMAT:")
-        prompt_parts.append("## IDENTIFIED PROBLEM")
-        prompt_parts.append("[Clear and precise problem description]")
-        prompt_parts.append("")
-        prompt_parts.append("## SEVERITY")
-        prompt_parts.append("[low|medium|high|critical]")
-        prompt_parts.append("")
-        prompt_parts.append("## RELEVANT DOCUMENTATION")
-        prompt_parts.append("[List with titles and scores]")
-        prompt_parts.append("")
-        prompt_parts.append("## RESOLUTION STEPS")
-        prompt_parts.append("[1. First step...]")
+        prompt_parts.append("IMPORTANT: Base your answer on the actual TOOL RESULTS provided above. Use the real data!")
         
         response = self.llm.generate([
             {"role": "system", "content": self._get_system_prompt()},
@@ -385,126 +475,110 @@ Respond in strict JSON:
     def _get_system_prompt(self) -> str:
         """
         Gets the specialized system prompt for the LLM.
-        
+
         @return: System prompt string
         """
-        return """You are a senior infrastructure diagnostic expert.
-Your specialties: Kubernetes, OpenSearch, Redis, Kafka.
+        return """You are a helpful infrastructure assistant specialized in Kubernetes, OpenSearch, Redis, and Kafka.
+
+YOUR ROLE:
+- Answer questions about infrastructure and operations
+- Help with troubleshooting and diagnostics when needed
+- Explain concepts and provide documentation references
+- Use real-time data from MCP tools to give accurate, current information
+- Provide guidance based on your team's internal documentation
 
 YOUR CAPABILITIES:
-- Analyze technical data (logs, metrics, status)
-- Correlate information from multiple sources
-- Propose actionable and precise solutions
-- Reference relevant documentation
+- Access to live infrastructure data via MCP tools (Kubernetes, OpenSearch, Redis, Kafka)
+- Access to your team's internal documentation database
+- Technical analysis and correlation of information from multiple sources
+- Conversational and helpful responses tailored to the user's question
 
-STRICT RULES:
-1. Be EXTREMELY PRECISE in your diagnostics
-2. ALWAYS cite sources (documentation, tools used)
-3. Propose exact commands to execute
-4. NUMBER ALL resolution steps
-5. Use Markdown format as in the example
+GUIDELINES:
+1. **Use the MCP tool results**: If tools were executed, USE the actual data in your response
+2. **Be conversational**: Adapt your response style to the question (diagnostic, informational, explanatory, etc.)
+3. **Reference documentation**: When relevant docs are found, mention them with their titles
+4. **Be precise**: Use exact data from tool outputs (pod names, metrics, status, etc.)
+5. **Format appropriately**:
+   - For diagnostics: structured format with problem, severity, steps
+   - For questions: clear, informative answers
+   - For explanations: detailed but concise responses
+6. **Use Markdown**: Format your responses with headers, lists, code blocks as appropriate
 
-EXAMPLE FORMAT:
-## IDENTIFIED PROBLEM
-Pods `app-backend-*` in namespace `production` are restarting in loop with exit code 137 (OOMKilled)
-
-## SEVERITY
-high
-
-## RELEVANT DOCUMENTATION
-- [K8s Memory Management Guide](https://docs.internal/k8s/memory) - Score: 0.98
-- [OOMKilled Errors](https://docs.internal/errors/oom) - Score: 0.95
-
-## RESOLUTION STEPS
-1. Check logs: `kubectl logs -n production pod/app-backend-xyz --previous`
-2. Analyze consumption: `kubectl describe -n production pod/app-backend-xyz`
-3. Increase memory: edit deployment to change limits.memory from 512Mi to 2Gi"""
+IMPORTANT: Always base your response on the TOOL RESULTS and DOCUMENTATION provided in the context. Don't ignore the real data!"""
     
     def _format_response(self, llm_response: str, query: str, category: str,
                         docs: List[DocumentationMatch], tools_results: List[Dict]) -> str:
         """
-        Formats the final diagnostic report.
-        
+        Formats the final response.
+        Handles both structured diagnostic reports and conversational responses.
+
         @param llm_response: Raw response from LLM
         @param query: Original user query
         @param category: Problem category
         @param docs: List of DocumentationMatch objects
         @param tools_results: List of tool execution results
-        @return: Formatted report string
+        @return: Formatted response string
         """
         lines = []
-        
+
         lines.append("=" * 80)
-        lines.append("  DIAGNOSTIC REPORT")
+
+        # Check if this is a structured diagnostic response
+        has_diagnostic_structure = (
+            "## IDENTIFIED PROBLEM" in llm_response or
+            "## SEVERITY" in llm_response or
+            "## RESOLUTION STEPS" in llm_response
+        )
+
+        if has_diagnostic_structure:
+            lines.append("  DIAGNOSTIC REPORT")
+        else:
+            lines.append("  INFRASTRUCTURE ASSISTANT")
+
         lines.append("=" * 80)
         lines.append("")
-        
-        problem = self._extract_section(llm_response, "IDENTIFIED PROBLEM")
-        if problem:
-            lines.append("## IDENTIFIED PROBLEM")
-            lines.append(problem)
-            lines.append("")
-        
-        severity = self._extract_section(llm_response, "SEVERITY")
-        if severity:
-            severity = severity.strip().lower()
-            severity_levels = {
-                "low": "GREEN",
-                "medium": "YELLOW", 
-                "high": "RED",
-                "critical": "CRITICAL"
-            }
-            severity_display = severity_levels.get(severity, severity).upper()
-            lines.append("## SEVERITY")
-            lines.append(f"**{severity_display}**")
-            lines.append("")
-        
-        doc_section = self._extract_section(llm_response, "RELEVANT DOCUMENTATION")
-        if doc_section:
-            lines.append("## RELEVANT DOCUMENTATION")
-            lines.append(doc_section)
-            lines.append("")
-        else:
-            if docs:
-                lines.append("## RELEVANT DOCUMENTATION")
-                for doc in docs:
-                    url_part = ""
-                    if doc.url:
-                        url_part = f" [{doc.source}]({doc.url})"
-                    else:
-                        url_part = f" [{doc.source}]"
-                    lines.append(f"- **{doc.title}** (Score: {doc.score:.2f}){url_part}")
-                lines.append("")
-        
-        steps_section = self._extract_section(llm_response, "RESOLUTION STEPS")
-        if steps_section:
-            lines.append("## RESOLUTION STEPS")
-            step_lines = []
-            for line in steps_section.split('\n'):
-                line = line.strip()
-                if line and not line.startswith('##') and not line.startswith('='):
-                    if line[0].isdigit() and line[1] == '.':
-                        step_lines.append(line)
-                    else:
-                        step_lines.append(line)
-            
-            for step in step_lines:
-                if step:
-                    lines.append(step)
-            lines.append("")
-        
+
+        # Simply include the LLM response as-is
+        # The LLM will format it appropriately based on the query type
+        lines.append(llm_response.strip())
+        lines.append("")
+
+        # Add metadata at the end
+        metadata_added = False
+
+        # Add tools used if not already mentioned in response
         if tools_results:
             tools_used = [r["tool"] for r in tools_results if r.get("status") == "success"]
-            if tools_used:
-                lines.append("## TOOLS USED")
+            if tools_used and "TOOLS USED" not in llm_response:
+                if not metadata_added:
+                    lines.append("---")
+                    lines.append("")
+                    metadata_added = True
+                lines.append("**Tools Used:**")
                 for tool in tools_used:
                     lines.append(f"- `{tool}`")
                 lines.append("")
-        
-        lines.append("---")
+
+        # Add documentation references if not already mentioned
+        if docs and "RELEVANT DOCUMENTATION" not in llm_response and "DOCUMENTATION" not in llm_response:
+            if not metadata_added:
+                lines.append("---")
+                lines.append("")
+                metadata_added = True
+            lines.append("**Related Documentation:**")
+            for doc in docs[:3]:  # Top 3 docs
+                url_part = f" - [Link]({doc.url})" if doc.url else ""
+                lines.append(f"- {doc.title} (Score: {doc.score:.2f}){url_part}")
+            lines.append("")
+
+        if metadata_added:
+            lines.append("---")
+        else:
+            lines.append("---")
+
         lines.append(f"Query: {query} | Category: {category}")
         lines.append("=" * 80)
-        
+
         return "\n".join(lines)
     
     def _extract_section(self, text: str, section_title: str) -> str:
@@ -532,10 +606,16 @@ high
         print("  INTERACTIVE CHAT MODE")
         print("=" * 80)
         print("\nExample queries:")
-        print("  - 'My app pods are restarting in a loop'")
-        print("  - 'OpenSearch is returning 503 errors'")
-        print("  - 'Redis has 500ms latency'")
-        print("  - 'Kafka has lag on topic orders'")
+        print("  DIAGNOSTIC:")
+        print("    - 'My app pods are restarting in a loop'")
+        print("    - 'OpenSearch is returning 503 errors'")
+        print("  INFORMATIONAL:")
+        print("    - 'How many pods are running in production?'")
+        print("    - 'What is the current status of our Kafka cluster?'")
+        print("    - 'Show me Redis memory usage'")
+        print("  DOCUMENTATION:")
+        print("    - 'How do we handle Redis failover?'")
+        print("    - 'What is our Kubernetes deployment process?'")
         print("\nType 'quit' to exit")
         print("=" * 80 + "\n")
         
