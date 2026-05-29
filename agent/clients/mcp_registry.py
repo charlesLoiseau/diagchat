@@ -48,8 +48,7 @@ class MCPRegistry:
         
         for category, url in Config.MCP_SERVERS.items():
             try:
-                mcp_url = f"{url}/mcp" if not url.endswith("/mcp") else url
-                client = httpx.Client(base_url=mcp_url, timeout=Config.MCP_TIMEOUT)
+                client = httpx.Client(base_url=url, timeout=Config.MCP_TIMEOUT)
                 
                 response = client.post(
                     "/",
