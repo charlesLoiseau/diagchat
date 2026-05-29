@@ -77,7 +77,7 @@ class QdrantDiagnostic:
         try:
             products: Set[str] = set()
             # Scroll through all points to collect products
-            points, _ = self.client.scroll_points(
+            points, _ = self.client.scroll(
                 collection_name=self.collection,
                 limit=10000,
                 with_payload=True
@@ -144,9 +144,9 @@ class QdrantDiagnostic:
                     ]
                 )
             
-            results = self.client.search_points(
+            results = self.client.query_points(
                 collection_name=self.collection,
-                query_vector=embedding,
+                query=[embedding],
                 limit=limit,
                 with_payload=True,
                 filter=search_filter
