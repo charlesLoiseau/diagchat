@@ -69,9 +69,6 @@ class ChatChoice(BaseModel):
     finish_reason: str
 
 
-# FASTAPI APPLICATION
-# ============================================================================
-=======
 class ChatResponse(BaseModel):
     """
     Response model for chat completions endpoint.
@@ -91,7 +88,7 @@ class ChatResponse(BaseModel):
     usage: Dict[str, int]
 
 
-app = FastAPI(============================================================================
+# ============================================================================
 # FASTAPI APPLICATION
 # ============================================================================
 
@@ -122,7 +119,6 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) 
     @throws HTTPException: If token is missing or invalid
     """
     if not Config.API_AUTH_TOKEN:
-        # No token configured, allow all requests
         return True
     
     if not credentials or not credentials.credentials:
@@ -162,7 +158,6 @@ async def chat_completions(
     @return: ChatResponse with generated completion
     @throws HTTPException: If processing fails or authentication is invalid
     """
-    # Create or retrieve session
     session_id = x_session_id or str(uuid.uuid4())
     
     if session_id not in sessions:
@@ -172,18 +167,15 @@ async def chat_completions(
     agent = sessions[session_id]
     history = session_history[session_id]
     
-    # Get the latest user message
     user_message = ""
     for msg in request.messages:
         if msg.role == "user":
             user_message = msg.content
             history.append(msg)
     
-    # Process with diagnostic agent
     try:
         response_text = agent.diagnose(user_message)
         
-        # Format OpenAI response
         response = ChatResponse(
             id=f"chatcmpl-{uuid.uuid4()}",
             created=int(datetime.now().timestamp()),
@@ -200,7 +192,6 @@ async def chat_completions(
             }
         )
         
-        # Add to history
         history.append(Message(role="assistant", content=response_text))
         
         return response
