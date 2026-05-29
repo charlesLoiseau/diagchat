@@ -4,75 +4,61 @@
 LLM CLIENT MODULE
 =================
 
-Client for interacting with Gemma4 LLM.
-Handles communication with the LLM API endpoint and manages
-request/response formatting.
+Client for interacting with OpenAI-compatible LLM API.
+Handles communication with the LLM API endpoint using the OpenAI client.
 """
 
-import httpx
-from typing import List, Dict, Optional
+from typing import List, Dict
+import openai
 from agent.config import Config
 
 
 class LLMAPI:
     """
-    Client for interacting with Gemma4 LLM.
+    Client for interacting with OpenAI-compatible LLM API.
     
-    Handles communication with the LLM API endpoint and manages
-    request/response formatting.
+    Uses the official OpenAI Python client to communicate with
+    OpenAI-compatible endpoints (including local LLM servers).
     
-    @attribute client: HTTP client for LLM API communication
+    @attribute client: OpenAI client instance
+    @attribute model: Model name to use for completions
     """
     
     def __init__(self):
         """
         Initializes the LLM client.
         
-        Creates an HTTP client with optional Bearer token authentication
-        if LLM_API_KEY is configured in environment variables.
+        Creates an OpenAI client configured with the API key and base URL
+        from environment variables. Supports multiple models on the same endpoint.
         
         @throws Exception: If client initialization fails
         """
-        headers = {}
-        if Config.LLM_API_KEY:
-            headers["Authorization"] = f"Bearer {Config.LLM_API_KEY}"
-        
-        self.client = httpx.Client(
-            timeout=Config.LLM_TIMEOUT,
-            headers=headers
+        self.client = openai.OpenAI(
+            api_key=Config.LLM_API_KEY,
+            base_url=Config.LLM_URL,
+            timeout=Config.LLM_TIMEOUT
         )
-        self.api_key = Config.LLM_API_KEY
+        self.model = Config.LLM_MODEL
     
     def generate(self, messages: List[Dict], temperature: float = 0.3) -> str:
         """
-        Generates a response from the LLM.
+        Generates a response from the LLM using OpenAI-compatible API.
         
         @param messages: List of message dictionaries (role, content)
         @param temperature: Sampling temperature (0.0 to 1.0)
         @return: Generated text response from the LLM
         @throws Exception: If LLM request fails
         """
-        payload = {
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": 4096,
-            "stream": False
-        }
-        
         try:
-            response = self.client.post(Config.LLM_URL, json=payload)
-            response.raise_for_status()
-            data = response.json()
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=4096,
+                stream=False
+            )
             
-            # Extract response based on API format
-            if 'choices' in data:
-                return data['choices'][0]['message']['content']
-            elif 'response' in data:
-                return data['response']
-            elif 'generation' in data:
-                return data['generation']
-            else:
-                return str(data)
+            return response.choices[0].message.content
                 
         except Exception as e:
             print(f"[LLM] Error: {e}")
@@ -80,6 +66,6 @@ class LLMAPI:
     
     def close(self):
         """
-        Closes the HTTP client connection.
+        Closes the OpenAI client connection.
         """
         self.client.close()

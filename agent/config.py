@@ -20,8 +20,9 @@ class Config:
     Settings are loaded from environment variables with fallback to defaults.
     
     Environment Variables:
-    - LLM_URL: URL for the LLM (Gemma4) API endpoint
+    - LLM_URL: URL for the OpenAI-compatible LLM API endpoint
     - LLM_API_KEY: Bearer token for LLM API authentication
+    - LLM_MODEL: Model name to use for completions
     - LLM_TIMEOUT: Timeout for LLM requests in seconds
     - MCP_KUBERNETES_URL: Kubernetes MCP server URL
     - MCP_OPENSEARCH_URL: OpenSearch MCP server URL
@@ -35,8 +36,9 @@ class Config:
     - API_AUTH_TOKEN: Bearer token for API endpoints (optional)
     
     @attribute MCP_SERVERS: Dictionary mapping category names to MCP server URLs
-    @attribute LLM_URL: URL for the LLM (Gemma4) API endpoint
+    @attribute LLM_URL: URL for the OpenAI-compatible LLM API endpoint
     @attribute LLM_API_KEY: Bearer token for LLM API authentication
+    @attribute LLM_MODEL: Model name to use for completions
     @attribute QDRANT_HOST: Qdrant server hostname
     @attribute QDRANT_PORT: Qdrant server port
     @attribute QDRANT_COLLECTION: Default Qdrant collection name
@@ -47,8 +49,9 @@ class Config:
     """
     
     # LLM Configuration
-    LLM_URL: str = os.getenv("LLM_URL", "http://localhost:8080/v1/chat/completions")
+    LLM_URL: str = os.getenv("LLM_URL", "http://localhost:8080/v1")
     LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "diagnostic-agent")
     LLM_TIMEOUT: float = float(os.getenv("LLM_TIMEOUT", "120.0"))
     
     # MCP Servers Configuration
