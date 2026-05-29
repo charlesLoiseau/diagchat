@@ -19,10 +19,8 @@ import time
 import os
 from datetime import datetime
 
-# Import the diagnostic agent from the agent package
 from agent import DiagnosticAgent, Config, DocumentationMatch
 
-# Security scheme for Bearer token authentication
 security = HTTPBearer()
 
 
@@ -71,6 +69,9 @@ class ChatChoice(BaseModel):
     finish_reason: str
 
 
+# FASTAPI APPLICATION
+# ============================================================================
+=======
 class ChatResponse(BaseModel):
     """
     Response model for chat completions endpoint.
@@ -90,7 +91,7 @@ class ChatResponse(BaseModel):
     usage: Dict[str, int]
 
 
-# ============================================================================
+app = FastAPI(============================================================================
 # FASTAPI APPLICATION
 # ============================================================================
 
@@ -100,7 +101,6 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS middleware for OpenWebUI
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -109,7 +109,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Session storage for multi-user support
 sessions: Dict[str, DiagnosticAgent] = {}
 session_history: Dict[str, List[Message]] = {}
 

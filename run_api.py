@@ -11,7 +11,6 @@ Loads configuration from .env file if present.
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
 if __name__ == "__main__":

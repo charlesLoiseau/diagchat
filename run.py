@@ -11,7 +11,6 @@ Loads configuration from .env file if present.
 
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
 from agent.diagnostic_agent import DiagnosticAgent
@@ -20,11 +19,8 @@ from agent.diagnostic_agent import DiagnosticAgent
 if __name__ == "__main__":
     agent = DiagnosticAgent()
     
-    # Test connections
     agent.test_connections()
     
-    # Start chat
     agent.chat()
     
-    # Clean up
     agent.close()

@@ -562,36 +562,53 @@ high
         """
         Tests all service connections.
         
-        Verifies connectivity to MCP servers, LLM, and Qdrant,
-        and reports the status of each.
+        Verifies connectivity to MCP servers, LLM, Embedding, and Qdrant,
+        and reports the status of each with detailed error information.
         """
         print("\n" + "=" * 80)
         print("  CONNECTION TESTS")
         print("=" * 80)
         
-        # Test MCP
         print("\n[1] MCP Servers...")
-        for category, tools in self.mcp.tools.items():
+        for category, url in Config.MCP_SERVERS.items():
+            tools = self.mcp.tools.get(category, [])
             status = "OK" if tools else "FAILED"
-            print(f"   [{status}] {category}: {len(tools)} tools")
+            mcp_url = f"{url}/mcp" if not url.endswith("/mcp") else url
+            if tools:
+                print(f"   [{status}] {category}: {len(tools)} tools loaded from {mcp_url}")
+            else:
+                print(f"   [{status}] {category}: Connection failed to {mcp_url}")
         
-        # Test LLM
         print("\n[2] LLM (Gemma4)...")
         try:
             response = self.llm.generate([
                 {"role": "user", "content": "Say OK"}
             ])
-            print(f"   [OK] Response: {response[:20]}")
+            print(f"   [OK] Model: {Config.LLM_MODEL}, URL: {Config.LLM_URL}")
         except Exception as e:
-            print(f"   [FAILED] {e}")
+            print(f"   [FAILED] Model: {Config.LLM_MODEL}, URL: {Config.LLM_URL}")
+            print(f"   Details: {e}")
         
-        # Test Qdrant
-        print("\n[3] Qdrant...")
+        print("\n[3] Embedding (BGE-M3)...")
+        try:
+            if self.qdrant.embedding_client:
+                test_vector = self.qdrant._get_embedding("test connection")
+                print(f"   [OK] Model: {self.qdrant.embedding_model}, URL: {Config.EMBEDDING_URL}")
+                print(f"   Vector dimension: {len(test_vector)}")
+            else:
+                print(f"   [FAILED] Embedding client not initialized")
+        except Exception as e:
+            print(f"   [FAILED] Model: {self.qdrant.embedding_model}, URL: {Config.EMBEDDING_URL}")
+            print(f"   Details: {e}")
+        
+        print("\n[4] Qdrant...")
         try:
             docs = self.qdrant.search("test", limit=1)
-            print(f"   [OK] {len(docs)} results")
+            print(f"   [OK] Collection: {self.qdrant.collection}, Host: {Config.QDRANT_HOST}:{Config.QDRANT_PORT}")
+            print(f"   Results: {len(docs)} documents found")
         except Exception as e:
-            print(f"   [FAILED] {e}")
+            print(f"   [FAILED] Collection: {self.qdrant.collection}, Host: {Config.QDRANT_HOST}:{Config.QDRANT_PORT}")
+            print(f"   Details: {e}")
         
         print("\n" + "=" * 80)
     
