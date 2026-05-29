@@ -169,10 +169,28 @@ Respond in strict JSON:
         @param all_tools: List of all available MCP tools
         @return: List of selected tools with metadata
         """
-        # Build tool list for LLM
+        # Build tool list for LLM with parameter information
         tools_text = []
         for i, tool in enumerate(all_tools):
-            tools_text.append(f"{i+1}. [{tool['category']}] {tool['name']}: {tool['description']}")
+            tool_line = f"{i+1}. [{tool['category']}] {tool['name']}: {tool['description']}"
+
+            # Add parameter information if available
+            input_schema = tool.get('inputSchema', {})
+            if input_schema and 'properties' in input_schema:
+                params = input_schema['properties']
+                required = input_schema.get('required', [])
+
+                param_strs = []
+                for param_name, param_info in params.items():
+                    is_required = "required" if param_name in required else "optional"
+                    param_type = param_info.get('type', 'string')
+                    param_desc = param_info.get('description', '')
+                    param_strs.append(f"{param_name} ({param_type}, {is_required}): {param_desc}")
+
+                if param_strs:
+                    tool_line += f"\n   Parameters: {', '.join(param_strs)}"
+
+            tools_text.append(tool_line)
 
         prompt = f"""Given the user query and available MCP tools, select the 1-3 most relevant tools to execute.
 
@@ -222,7 +240,7 @@ Your selection:"""
                     "category": tool["category"],
                     "name": tool["name"],
                     "description": tool["description"],
-                    "parameters": tool.get("inputSchema", {}).get("properties", {}),
+                    "inputSchema": tool.get("inputSchema", {}),  # Keep full schema
                     "reason": f"Selected by LLM for {category}"
                 })
 
@@ -237,9 +255,114 @@ Your selection:"""
                 "category": t["category"],
                 "name": t["name"],
                 "description": t["description"],
-                "parameters": t.get("inputSchema", {}).get("properties", {}),
+                "inputSchema": t.get("inputSchema", {}),  # Keep full schema
                 "reason": f"Fallback selection for {category}"
             } for t in fallback]
+
+    def _extract_arguments_with_llm(self, query: str, tool_info: Dict) -> Dict[str, Any]:
+        """
+        Uses LLM to extract parameter values from the user query for a specific tool.
+
+        @param query: The user query string
+        @param tool_info: Dictionary containing tool metadata and inputSchema
+        @return: Dictionary of argument name -> value
+        """
+        # Get parameter schema from inputSchema
+        input_schema = tool_info.get("inputSchema", {})
+        properties = input_schema.get("properties", {})
+        required_params = input_schema.get("required", [])
+
+        if not properties:
+            return {}
+
+        # Build parameter description for LLM
+        param_descriptions = []
+        for param_name, param_schema in properties.items():
+            param_type = param_schema.get("type", "string")
+            param_desc = param_schema.get("description", "")
+            is_required = "REQUIRED" if param_name in required_params else "optional"
+            param_descriptions.append(f"- {param_name} ({param_type}, {is_required}): {param_desc}")
+
+        prompt = f"""Extract the parameter values from the user query for this MCP tool.
+
+TOOL: {tool_info.get('name')}
+DESCRIPTION: {tool_info.get('description')}
+
+PARAMETERS:
+{chr(10).join(param_descriptions)}
+
+USER QUERY: {query}
+
+Extract the parameter values from the query. Respond in strict JSON format:
+{{
+  "param_name": "value",
+  "another_param": "value"
+}}
+
+Rules:
+- Only include parameters that you can extract from the query
+- For required parameters not found, use reasonable defaults or empty string
+- For namespace parameters, default to "default" if not specified
+- Return valid JSON only
+
+Your JSON response:"""
+
+        try:
+            response = self.llm.generate([
+                {"role": "system", "content": "You are a parameter extraction expert. Extract values from queries and return valid JSON only."},
+                {"role": "user", "content": prompt}
+            ], temperature=0.1)
+
+            # Try to parse JSON response
+            response = response.strip()
+
+            # Remove markdown code blocks if present
+            if response.startswith("```json"):
+                response = response[7:]
+            if response.startswith("```"):
+                response = response[3:]
+            if response.endswith("```"):
+                response = response[:-3]
+            response = response.strip()
+
+            arguments = json.loads(response)
+
+            print(f"[ARGS] LLM extracted: {arguments}")
+            return arguments
+
+        except json.JSONDecodeError as e:
+            print(f"[ARGS] JSON parse error: {e}, response was: {response[:200]}")
+            # Fallback to regex extraction
+            return self._extract_arguments_fallback(query, input_schema)
+        except Exception as e:
+            print(f"[ARGS] LLM extraction failed: {e}")
+            return self._extract_arguments_fallback(query, input_schema)
+
+    def _extract_arguments_fallback(self, query: str, input_schema: Dict) -> Dict[str, Any]:
+        """
+        Fallback method using regex when LLM extraction fails.
+
+        @param query: The user query string
+        @param input_schema: The inputSchema dictionary with properties and required fields
+        @return: Dictionary of extracted arguments
+        """
+        properties = input_schema.get("properties", {})
+        required_params = input_schema.get("required", [])
+
+        arguments = {}
+        for param_name, param_schema in properties.items():
+            value = self._extract_param_from_query(query, param_name)
+            if value:
+                arguments[param_name] = value
+            elif "default" in param_schema:
+                arguments[param_name] = param_schema["default"]
+            elif param_name in required_params:
+                # Provide reasonable defaults for required params
+                if param_name.lower() == "namespace":
+                    arguments[param_name] = "default"
+                else:
+                    arguments[param_name] = ""
+        return arguments
 
     def _execute_relevant_tools(self, query: str, category: str, diagnosis: Dict) -> List[Dict]:
         """
@@ -278,15 +401,11 @@ Your selection:"""
         results = []
         for tool_info in tools_to_call:
             try:
-                arguments = {}
-                for param, schema in tool_info.get("parameters", {}).items():
-                    if schema.get("required"):
-                        arguments[param] = self._extract_param_from_query(query, param)
-                    elif "default" in schema:
-                        arguments[param] = schema["default"]
-                
-                print(f"[TOOL] Executing: {tool_info['category']}/{tool_info['name']}")
-                
+                # Use LLM to extract arguments from query
+                arguments = self._extract_arguments_with_llm(query, tool_info)
+
+                print(f"[TOOL] Executing: {tool_info['category']}/{tool_info['name']} with args: {arguments}")
+
                 start = time.time()
                 result = self.mcp.call_tool(
                     tool_info["category"],
