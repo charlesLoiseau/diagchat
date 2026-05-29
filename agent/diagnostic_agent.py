@@ -445,29 +445,26 @@ high
             lines.append(problem)
             lines.append("")
         
-        # Extract severity
         severity = self._extract_section(llm_response, "SEVERITY")
         if severity:
             severity = severity.strip().lower()
-            severity_emoji = {
+            severity_levels = {
                 "low": "GREEN",
                 "medium": "YELLOW", 
                 "high": "RED",
                 "critical": "CRITICAL"
             }
-            severity_display = severity_emoji.get(severity, severity).upper()
+            severity_display = severity_levels.get(severity, severity).upper()
             lines.append("## SEVERITY")
             lines.append(f"**{severity_display}**")
             lines.append("")
         
-        # Documentation
         doc_section = self._extract_section(llm_response, "RELEVANT DOCUMENTATION")
         if doc_section:
             lines.append("## RELEVANT DOCUMENTATION")
             lines.append(doc_section)
             lines.append("")
         else:
-            # Auto-formatting from docs
             if docs:
                 lines.append("## RELEVANT DOCUMENTATION")
                 for doc in docs:
@@ -479,11 +476,9 @@ high
                     lines.append(f"- **{doc.title}** (Score: {doc.score:.2f}){url_part}")
                 lines.append("")
         
-        # Resolution steps
         steps_section = self._extract_section(llm_response, "RESOLUTION STEPS")
         if steps_section:
             lines.append("## RESOLUTION STEPS")
-            # Number automatically
             step_lines = []
             for line in steps_section.split('\n'):
                 line = line.strip()
@@ -498,7 +493,6 @@ high
                     lines.append(step)
             lines.append("")
         
-        # Tools used
         if tools_results:
             tools_used = [r["tool"] for r in tools_results if r.get("status") == "success"]
             if tools_used:
@@ -507,7 +501,6 @@ high
                     lines.append(f"- `{tool}`")
                 lines.append("")
         
-        # Footer
         lines.append("---")
         lines.append(f"Query: {query} | Category: {category}")
         lines.append("=" * 80)
