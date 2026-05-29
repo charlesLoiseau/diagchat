@@ -5,56 +5,107 @@ MCP REGISTRY MODULE
 ===================
 
 Manages multiple MCP servers (Kubernetes, OpenSearch, Redis, Kafka).
+Uses the official MCP Python client for proper session management.
 Provides centralized access to all MCP tools across different servers,
 with automatic discovery and categorization.
 """
 
-import httpx
+import asyncio
+import threading
+import time
 from typing import Optional, List, Dict, Any, Tuple
+from mcp import Client
 from agent.config import Config
 
 
 class MCPRegistry:
     """
-    Manages multiple MCP servers (Kubernetes, OpenSearch, Redis, Kafka).
+    Manages multiple MCP servers using the official MCP Python client.
     
-    Provides centralized access to all MCP tools across different servers,
-    with automatic discovery and categorization.
+    Handles session initialization, tool discovery, and tool execution
+    using the Model Context Protocol (MCP) official SDK.
     
-    @attribute clients: Dictionary of HTTP clients for each MCP server category
+    @attribute clients: Dictionary of MCP Client instances for each category
     @attribute tools: Dictionary mapping category to list of available tools
+    @attribute loop: Asyncio event loop for managing async operations
     """
     
     def __init__(self):
         """
         Initializes the MCP registry and connects to all configured servers.
         
+        Creates a dedicated event loop for async MCP operations.
+        
         @throws Exception: If connection to MCP servers fails
         """
-        self.clients = {}
-        self.tools = {}  # category -> [tool1, tool2, ...]
-        self._initialize()
-    
-    def _initialize(self):
-        """
-        Initializes HTTP clients for each MCP server and loads available tools.
+        self.clients: Dict[str, Client] = {}
+        self.tools: Dict[str, List[Dict[str, Any]]] = {}
         
-        @throws Exception: If connection to any MCP server fails
+        # Create dedicated event loop for MCP async operations
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self._run_event_loop, daemon=True)
+        self.thread.start()
+        
+        # Give the event loop a moment to start
+        time.sleep(0.1)
+        
+        # Initialize all configured MCP servers
+        self._initialize_sync()
+    
+    def _run_event_loop(self):
+        """Runs the asyncio event loop in a background thread."""
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
+    
+    def _initialize_sync(self):
         """
+        Initializes all MCP clients synchronously using the event loop.
+        """
+        if not Config.MCP_SERVERS:
+            print("[MCP] No MCP servers configured")
+            return
+        
         for category, url in Config.MCP_SERVERS.items():
             try:
-                client = httpx.Client(base_url=url, timeout=Config.MCP_TIMEOUT)
-                response = client.get("/tools")
-                response.raise_for_status()
-                
-                self.clients[category] = client
-                self.tools[category] = response.json().get("tools", [])
-                print(f"[MCP/{category}] Successfully loaded {len(self.tools[category])} tools")
-                
+                # Create a coroutine for initialization
+                coro = self._initialize_server(category, url)
+                future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+                future.result()  # Block until complete
             except Exception as e:
                 print(f"[MCP/{category}] Error: {e}")
                 self.clients[category] = None
                 self.tools[category] = []
+    
+    async def _initialize_server(self, category: str, url: str):
+        """
+        Initializes a single MCP server connection asynchronously.
+        
+        @param category: The category name for this server
+        @param url: The URL of the MCP server
+        """
+        try:
+            # Create client and initialize session
+            client = Client(url=url)
+            await client.initialize()
+            
+            # List available tools
+            tools = await client.list_tools()
+            
+            self.clients[category] = client
+            self.tools[category] = [
+                {
+                    "name": tool.name,
+                    "description": tool.description or "",
+                    "inputSchema": tool.inputSchema or {}
+                }
+                for tool in tools
+            ]
+            print(f"[MCP/{category}] Successfully loaded {len(self.tools[category])} tools")
+            
+        except Exception as e:
+            print(f"[MCP/{category}] Error: {e}")
+            self.clients[category] = None
+            self.tools[category] = []
     
     def get_tool(self, tool_name: str) -> Optional[Tuple[str, Dict]]:
         """
@@ -82,20 +133,35 @@ class MCPRegistry:
             return {"error": f"MCP server {category} not available"}
         
         try:
-            response = self.clients[category].post(
-                f"/tools/{tool_name}",
-                json={"arguments": arguments},
-                timeout=Config.MCP_TIMEOUT
-            )
-            response.raise_for_status()
-            return response.json()
+            client = self.clients[category]
+            coro = client.call_tool(tool_name, arguments)
+            future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+            result = future.result(timeout=Config.MCP_TIMEOUT)
+            
+            # Convert MCP ToolResult to dict
+            return {
+                "content": [
+                    {"type": "text", "text": str(content)}
+                    if hasattr(content, 'text') else content
+                    for content in result.content
+                ] if hasattr(result, 'content') else {}
+            }
         except Exception as e:
             return {"error": str(e)}
     
     def close_all(self):
         """
-        Closes all HTTP client connections.
+        Closes all MCP client connections.
         """
-        for client in self.clients.values():
+        for category, client in self.clients.items():
             if client:
-                client.close()
+                try:
+                    # Close client asynchronously
+                    coro = client.close()
+                    future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+                    future.result(timeout=5)
+                except:
+                    pass
+        
+        # Stop the event loop thread
+        self.loop.call_soon_threadsafe(self.loop.stop)
